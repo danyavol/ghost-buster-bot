@@ -196,6 +196,7 @@ async function runDailySweep(env: Env): Promise<void> {
     const toWarn = await env.DB.prepare(
       `SELECT user_id, display_name FROM chat_members
        WHERE chat_id = ?1 AND excluded = 0 AND role = 'member'
+         AND (joined_at IS NULL OR datetime(joined_at) <= datetime(?2, '-' || ?3 || ' days'))
          AND (last_activity_at IS NULL OR datetime(last_activity_at) <= datetime(?2, '-' || ?3 || ' days'))
          AND warned_at IS NULL`
     )
@@ -221,6 +222,7 @@ async function runDailySweep(env: Env): Promise<void> {
     const toKick = await env.DB.prepare(
       `SELECT user_id, display_name FROM chat_members
        WHERE chat_id = ?1 AND excluded = 0 AND role = 'member'
+         AND (joined_at IS NULL OR datetime(joined_at) <= datetime(?2, '-' || ?3 || ' days'))
          AND (last_activity_at IS NULL OR datetime(last_activity_at) <= datetime(?2, '-' || ?3 || ' days'))
          AND warned_at IS NOT NULL`
     )
@@ -304,7 +306,7 @@ async function handlePreview(env: Env, tg: TelegramApiClient, chatId: number, fr
   const lines: string[] = [];
   for (const m of members.results) {
     const isProtected = m.role === "administrator" || m.role === "creator" || m.excluded === 1;
-    const kick = isProtected ? null : computeKickDateNoGrace(m.last_activity_at, windowDays);
+    const kick = isProtected ? null : computeKickDateWindow(m.joined_at, m.last_activity_at, windowDays);
     const name = m.username ? `@${m.username}` : `${m.display_name}`;
     const status = isProtected ? "не удаляется" : (kick ? formatDatePlain(kick) : "нет данных");
     lines.push(`• ${name} — ${status}`);
@@ -372,5 +374,11 @@ function formatDatePlain(d: Date): string {
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
+}
+
+function computeKickDateWindow(joinedAt: string | null, lastActivityAt: string | null, windowDays: number): Date | null {
+  const base = lastActivityAt ? new Date(lastActivityAt) : (joinedAt ? new Date(joinedAt) : null);
+  if (!base) return null;
+  return addDays(base, windowDays);
 }
 
