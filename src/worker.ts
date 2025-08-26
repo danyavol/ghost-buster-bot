@@ -50,6 +50,8 @@ async function handleUpdate(env: Env, update: TelegramUpdate): Promise<void> {
           await handleSetWindow(env, tg, msg.chat.id, msg.from.id, args);
         } else if (cmd === "/preview") {
           await handlePreview(env, tg, msg.chat.id, msg.from.id);
+        } else if (cmd === "/status") {
+          await handleStatus(env, tg, msg.chat.id);
         } else if (cmd === "/help" || cmd === "/start") {
           await sendHelp(tg, msg.chat.id);
         }
@@ -128,7 +130,10 @@ async function upsertReactionActivity(env: Env, chatId: number, user: any): Prom
        display_name = excluded.display_name,
        username = excluded.username,
        last_reaction_at = ?4,
-       last_activity_at = COALESCE(MAX(?4, chat_members.last_message_at, chat_members.last_reaction_at), ?4),
+       last_activity_at = CASE
+         WHEN chat_members.last_activity_at IS NULL OR ?4 > chat_members.last_activity_at THEN ?4
+         ELSE chat_members.last_activity_at
+       END,
        role = CASE WHEN chat_members.role IN ('left','kicked') THEN 'member' ELSE chat_members.role END,
        warned_at = NULL`
   )
@@ -218,6 +223,24 @@ async function assertAdmin(env: Env, tg: TelegramApiClient, chatId: number, user
   }
 }
 
+async function handleStatus(env: Env, tg: TelegramApiClient, chatId: number): Promise<void> {
+  const token = env.TELEGRAM_BOT_TOKEN;
+  const botIdStr = token.split(":")[0];
+  const botId = Number(botIdStr);
+  try {
+    const m = await tg.getChatMember(chatId, botId);
+    const status = m?.status as ChatRole | undefined;
+    const canRestrict = Boolean(m?.can_restrict_members) || status === "creator";
+    const lines = [
+      `Статус бота: ${status ?? "unknown"}`,
+      `Право удалять (can_restrict_members): ${canRestrict ? "да" : "нет"}`,
+    ];
+    await tg.sendMessage(chatId, lines.join("\n"));
+  } catch (e) {
+    await tg.sendMessage(chatId, `Не удалось получить статус бота. Убедитесь, что бот в группе.`);
+  }
+}
+
 async function handleSetWindow(env: Env, tg: TelegramApiClient, chatId: number, fromUserId: number, args: string[]): Promise<void> {
   const isAdmin = await assertAdmin(env, tg, chatId, fromUserId);
   if (!isAdmin) return;
@@ -269,6 +292,7 @@ async function sendHelp(tg: TelegramApiClient, chatId: number): Promise<void> {
     "Команды (для админов):",
     "- /set-window N — установить окно активности в днях (7–365)",
     "- /preview — показать кандидатов на удаление (до 50)",
+    "- /status — проверить права бота (нужен can_restrict_members)",
     "",
     "Примечание: новички имеют отсрочку (grace) 7 дней по умолчанию.",
   ].join("\n");
