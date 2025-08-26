@@ -58,7 +58,7 @@ async function handleUpdate(env: Env, update: TelegramUpdate): Promise<void> {
             const dm = [
               "👋 Этот бот работает только в группах.",
               "Добавьте меня в группу и выдайте права администратора с can_restrict_members, затем используйте команды в группе:",
-              "- /set-window N",
+              "- /setwindow N",
               "- /preview",
               "- /status",
             ].join("\n");
@@ -69,7 +69,7 @@ async function handleUpdate(env: Env, update: TelegramUpdate): Promise<void> {
 
         if (msg.chat.type === "group" || msg.chat.type === "supergroup") {
           await ensureChat(env, msg.chat);
-          if (cmd === "/set-window") {
+          if (cmd === "/setwindow") {
             await handleSetWindow(env, tg, msg.chat.id, msg.from.id, args);
           } else if (cmd === "/preview") {
             await handlePreview(env, tg, msg.chat.id, msg.from.id);
@@ -271,7 +271,7 @@ async function handleSetWindow(env: Env, tg: TelegramApiClient, chatId: number, 
   if (!isAdmin) return;
   const value = Number(args[0]);
   if (!Number.isFinite(value) || value < 7 || value > 365) {
-    await tg.sendMessage(chatId, `Укажите число дней 7-365. Пример: /set-window 60`);
+    await tg.sendMessage(chatId, `Укажите число дней 7-365. Пример: /setwindow 60`);
     return;
   }
   await env.DB.prepare(`UPDATE chats SET activity_window_days = ?2, updated_at = ?3 WHERE chat_id = ?1`)
@@ -337,7 +337,7 @@ async function sendHelp(tg: TelegramApiClient, chatId: number): Promise<void> {
     "• Активность: сообщения и реакции",
     "",
     "Команды для админов:",
-    "- /set-window N — окно активности в днях (7–365)",
+    "- /setwindow N — окно активности в днях (7–365)",
     "- /preview — список участников и дата возможного кика",
     "- /status — проверка прав бота (нужно can_restrict_members)",
   ].join("\n");
