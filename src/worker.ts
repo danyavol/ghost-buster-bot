@@ -1,4 +1,4 @@
-import { TelegramApiClient, TelegramUpdate, htmlMention } from "./telegram";
+import { TelegramApiClient, TelegramUpdate } from "./telegram";
 
 interface Env {
   DB: D1Database;
@@ -177,10 +177,10 @@ async function runDailySweep(env: Env): Promise<void> {
       .all<{ user_id: number; display_name: string }>();
 
     if (toWarn.results && toWarn.results.length > 0) {
-      const mentions = toWarn.results.map((r) => htmlMention(r.user_id, r.display_name)).join(", ");
-      const text = `Внимание: завтра участники будут исключены из чата за неактивность: ${mentions}. Чтобы остаться, отправьте сообщение сегодня.`;
+      const mentions = toWarn.results.map((r) => mdMention(r.user_id, r.display_name)).join(", ");
+      const text = `⚠️ *Предупреждение*\nЗавтра будут исключены за неактивность: ${mentions}.\nЧтобы остаться, отправьте сообщение или поставьте реакцию сегодня.`;
       try {
-        await tg.sendMessage(chatId, text, { parse_mode: "HTML", disable_web_page_preview: true });
+        await tg.sendMessage(chatId, text, { parse_mode: "MarkdownV2", disable_web_page_preview: true } as any);
       } catch (e) {
         console.error("send warn message error", e);
       }
@@ -246,13 +246,13 @@ async function handleSetWindow(env: Env, tg: TelegramApiClient, chatId: number, 
   if (!isAdmin) return;
   const value = Number(args[0]);
   if (!Number.isFinite(value) || value < 7 || value > 365) {
-    await tg.sendMessage(chatId, `Укажите число дней 7-365. Пример: /set-window 60`);
+    await tg.sendMessage(chatId, `ℹ️ Укажите число дней 7\-365\. Пример: \`/set\-window 60\``, { parse_mode: "MarkdownV2" } as any);
     return;
   }
   await env.DB.prepare(`UPDATE chats SET activity_window_days = ?2, updated_at = ?3 WHERE chat_id = ?1`)
     .bind(chatId, value, new Date().toISOString())
     .run();
-  await tg.sendMessage(chatId, `Ок. Окно активности = ${value} д.`);
+  await tg.sendMessage(chatId, `✅ Окно активности: *${value} д*`, { parse_mode: "MarkdownV2" } as any);
 }
 
 async function handlePreview(env: Env, tg: TelegramApiClient, chatId: number, fromUserId: number): Promise<void> {
@@ -261,41 +261,94 @@ async function handlePreview(env: Env, tg: TelegramApiClient, chatId: number, fr
   const row = await env.DB.prepare(`SELECT activity_window_days, grace_days FROM chats WHERE chat_id = ?1`).bind(chatId).first<{ activity_window_days: number; grace_days: number }>();
   const windowDays = row?.activity_window_days ?? 60;
   const graceDays = row?.grace_days ?? 7;
-  const nowIso = new Date().toISOString();
-  const res = await env.DB.prepare(
-    `SELECT user_id, display_name FROM chat_members
-     WHERE chat_id = ?1 AND excluded = 0 AND role = 'member'
-       AND (joined_at IS NULL OR datetime(joined_at) <= datetime(?2, '-' || ?3 || ' days'))
-       AND (last_activity_at IS NULL OR datetime(last_activity_at) <= datetime(?2, '-' || ?4 || ' days'))
-     ORDER BY last_activity_at NULLS FIRST
-     LIMIT 50`
-  )
-    .bind(chatId, nowIso, graceDays, windowDays)
-    .all<{ user_id: number; display_name: string }>();
 
-  if (!res.results || res.results.length === 0) {
-    await tg.sendMessage(chatId, `Кандидатов на удаление нет.`);
+  const members = await env.DB.prepare(
+    `SELECT user_id, display_name, username, role, joined_at, last_activity_at, excluded
+     FROM chat_members
+     WHERE chat_id = ?1 AND role IN ('member','administrator','creator')
+     ORDER BY role != 'member', display_name`
+  )
+    .bind(chatId)
+    .all<{ user_id: number; display_name: string; username: string | null; role: string; joined_at: string | null; last_activity_at: string | null; excluded: number }>();
+
+  if (!members.results || members.results.length === 0) {
+    await tg.sendMessage(chatId, `ℹ️ В базе пока нет участников\.`, { parse_mode: "MarkdownV2" } as any);
     return;
   }
-  const mentions = res.results.map((r) => htmlMention(r.user_id, r.display_name)).join(", ");
-  await tg.sendMessage(chatId, `Кандидаты на удаление: ${mentions}`, { parse_mode: "HTML", disable_web_page_preview: true });
+
+  const header = `📋 *Предпросмотр*\nОкно: *${windowDays} д*  •  Отсрочка: *${graceDays} д*\nВсего: *${members.results.length}*`;
+  const lines: string[] = [];
+  for (const m of members.results) {
+    const isProtected = m.role === "administrator" || m.role === "creator" || m.excluded === 1;
+    const kick = isProtected ? null : computeKickDate(m.joined_at, m.last_activity_at, windowDays, graceDays);
+    const name = m.username ? `@${mdEscape(m.username)}` : mdMention(m.user_id, m.display_name);
+    const status = isProtected ? "не удаляется" : (kick ? formatDateMd(kick) : "нет данных");
+    lines.push(`• 👤 ${name} — 🗓️ ${status}`);
+  }
+
+  const chunks: string[] = [];
+  let acc = header + "\n\n";
+  for (const line of lines) {
+    if ((acc + line + "\n").length > 3500) {
+      chunks.push(acc);
+      acc = "";
+    }
+    acc += line + "\n";
+  }
+  if (acc) chunks.push(acc);
+
+  for (const msg of chunks) {
+    await tg.sendMessage(chatId, msg, { parse_mode: "MarkdownV2", disable_web_page_preview: true } as any);
+  }
 }
 
 async function sendHelp(tg: TelegramApiClient, chatId: number): Promise<void> {
   const text = [
-    "Я помогаю поддерживать активность в группе:",
-    "- Каждый день проверяю активность за окно в N дней (по умолчанию 60)",
-    "- За сутки до удаления отправляю предупреждение",
-    "- Удаляю только если предупреждение было и активности не было",
-    "- Активностью считаются сообщения и реакции",
+    "👋 *Ghost Buster Bot*",
+    "Следит за активностью и помогает удалять неактивных участников\.",
     "",
-    "Команды (для админов):",
-    "- /set-window N — установить окно активности в днях (7–365)",
-    "- /preview — показать кандидатов на удаление (до 50)",
-    "- /status — проверить права бота (нужен can_restrict_members)",
+    "• Ежедневная проверка в 09:00 по Варшаве",
+    "• Окно активности по умолчанию — *60 д*",
+    "• За сутки до удаления приходит предупреждение",
+    "• Активность: сообщения и реакции",
     "",
-    "Примечание: новички имеют отсрочку (grace) 7 дней по умолчанию.",
+    "📎 *Команды для админов*",
+    "\- /set\-window N — окно активности в днях \(7–365\)",
+    "\- /preview — список участников и дата возможного кика",
+    "\- /status — проверка прав бота \(нужно can\_restrict\_members\)",
+    "",
+    "ℹ️ Новички имеют отсрочку *7 д* по умолчанию\."
   ].join("\n");
-  await tg.sendMessage(chatId, text);
+  await tg.sendMessage(chatId, text, { parse_mode: "MarkdownV2" } as any);
+}
+
+function computeKickDate(joinedAt: string | null, lastActivityAt: string | null, windowDays: number, graceDays: number): Date | null {
+  const joined = joinedAt ? new Date(joinedAt) : null;
+  const last = lastActivityAt ? new Date(lastActivityAt) : null;
+  if (!joined && !last) return null;
+  const grace = joined ? addDays(joined, graceDays) : null;
+  const base = last ?? joined;
+  const window = base ? addDays(base, windowDays) : null;
+  const candidates = [grace?.getTime() ?? 0, window?.getTime() ?? 0].filter((t) => t > 0) as number[];
+  if (candidates.length === 0) return null;
+  return new Date(Math.max(...candidates));
+}
+
+function addDays(d: Date, n: number): Date { return new Date(d.getTime() + n * 86400000); }
+
+function formatDateMd(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  // escape hyphen and dot for MarkdownV2
+  return `${y}\\-${m}\\-${day}`;
+}
+
+function mdEscape(s: string): string {
+  return String(s).replace(/[\\_\*\[\]\(\)~`>#+\-=\|\{\}\.\!]/g, (m) => `\\${m}`);
+}
+
+function mdMention(userId: number, displayName: string): string {
+  return `[${mdEscape(displayName)}](tg://user?id=${userId})`;
 }
 
