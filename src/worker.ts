@@ -270,8 +270,8 @@ async function handleSetWindow(env: Env, tg: TelegramApiClient, chatId: number, 
   const isAdmin = await assertAdmin(env, tg, chatId, fromUserId);
   if (!isAdmin) return;
   const value = Number(args[0]);
-  if (!Number.isFinite(value) || value < 7 || value > 365) {
-    await tg.sendMessage(chatId, `Укажите число дней 7-365. Пример: /setwindow 60`);
+  if (!Number.isFinite(value) || value < 2 || value > 365) {
+    await tg.sendMessage(chatId, `Укажите число дней 2-365. Пример: /setwindow 60`);
     return;
   }
   await env.DB.prepare(`UPDATE chats SET activity_window_days = ?2, updated_at = ?3 WHERE chat_id = ?1`)
@@ -337,7 +337,7 @@ async function sendHelp(tg: TelegramApiClient, chatId: number): Promise<void> {
     "• Активность: сообщения и реакции",
     "",
     "Команды для админов:",
-    "- /setwindow N — окно активности в днях (7–365)",
+    "- /setwindow N — окно активности в днях (2–365)",
     "- /preview — список участников и дата возможного кика",
     "- /status — проверка прав бота (нужно can_restrict_members)",
   ].join("\n");
