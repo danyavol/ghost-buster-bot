@@ -5,10 +5,14 @@ compatibility_flags = ["nodejs_compat"]
 account_id = "b480d5f28dce910419458a20d2656fbe"
 
 [vars]
-# Set via `wrangler secrets put TELEGRAM_BOT_TOKEN`
-# Set via `wrangler secrets put TELEGRAM_WEBHOOK_SECRET`
+# Set via `wrangler secret put TELEGRAM_BOT_TOKEN`
+# Set via `wrangler secret put TELEGRAM_WEBHOOK_SECRET`
 [triggers]
 crons = ["0 7 * * *"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
 
 [[d1_databases]]
 binding = "DB"

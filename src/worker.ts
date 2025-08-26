@@ -10,24 +10,33 @@ type ChatRole = "creator" | "administrator" | "member" | "restricted" | "left" |
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/") {
-      return new Response("ok", { status: 200 });
-    }
-    if (request.method === "POST" && url.pathname === "/webhook") {
-      const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
-      if (!secret || secret !== env.TELEGRAM_WEBHOOK_SECRET) {
-        return new Response("forbidden", { status: 403 });
+    try {
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname === "/") {
+        return new Response("ok", { status: 200 });
       }
-      const update = (await request.json()) as TelegramUpdate;
-      ctx.waitUntil(handleUpdate(env, update));
-      return new Response("ok", { status: 200 });
+      if (request.method === "POST" && url.pathname === "/webhook") {
+        const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+        if (!secret || secret !== env.TELEGRAM_WEBHOOK_SECRET) {
+          return new Response("forbidden", { status: 403 });
+        }
+        const update = (await request.json()) as TelegramUpdate;
+        ctx.waitUntil(handleUpdate(env, update));
+        return new Response("ok", { status: 200 });
+      }
+      return new Response("not found", { status: 404 });
+    } catch (e) {
+      console.error("fetch handler error", e);
+      return new Response("internal error", { status: 500 });
     }
-    return new Response("not found", { status: 404 });
   },
 
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(runDailySweep(env));
+    try {
+      ctx.waitUntil(runDailySweep(env));
+    } catch (e) {
+      console.error("scheduled handler error", e);
+    }
   },
 };
 
@@ -36,29 +45,47 @@ async function handleUpdate(env: Env, update: TelegramUpdate): Promise<void> {
     if (update.message) {
       const msg = update.message;
       if (!msg.chat || !msg.from) return;
-      // Ignore non-group chats
-      if (msg.chat.type !== "group" && msg.chat.type !== "supergroup") return;
-      await ensureChat(env, msg.chat);
 
-      // Commands (admin-only)
+      // Commands in any chat type
       if (typeof msg.text === "string" && msg.text.startsWith("/")) {
         const tg = new TelegramApiClient(env.TELEGRAM_BOT_TOKEN);
         const text: string = msg.text.trim();
         const [cmdRaw, ...args] = text.split(/\s+/);
         const cmd = cmdRaw.split("@")[0];
-        if (cmd === "/set-window") {
-          await handleSetWindow(env, tg, msg.chat.id, msg.from.id, args);
-        } else if (cmd === "/preview") {
-          await handlePreview(env, tg, msg.chat.id, msg.from.id);
-        } else if (cmd === "/status") {
-          await handleStatus(env, tg, msg.chat.id);
-        } else if (cmd === "/help" || cmd === "/start") {
-          await sendHelp(tg, msg.chat.id);
+
+        if (msg.chat.type === "private") {
+          if (cmd === "/help" || cmd === "/start") {
+            const dm = [
+              "👋 Этот бот работает только в группах.",
+              "Добавьте меня в группу и выдайте права администратора с can_restrict_members, затем используйте команды в группе:",
+              "- /set-window N",
+              "- /preview",
+              "- /status",
+            ].join("\n");
+            await tg.sendMessage(msg.chat.id, dm);
+          }
+          return;
+        }
+
+        if (msg.chat.type === "group" || msg.chat.type === "supergroup") {
+          await ensureChat(env, msg.chat);
+          if (cmd === "/set-window") {
+            await handleSetWindow(env, tg, msg.chat.id, msg.from.id, args);
+          } else if (cmd === "/preview") {
+            await handlePreview(env, tg, msg.chat.id, msg.from.id);
+          } else if (cmd === "/status") {
+            await handleStatus(env, tg, msg.chat.id);
+          } else if (cmd === "/help" || cmd === "/start") {
+            await sendHelp(tg, msg.chat.id);
+          }
         }
       }
 
-      // Any message counts as activity
-      await upsertMemberActivity(env, msg.chat.id, msg.from, "message");
+      // Only track activity in groups
+      if (msg.chat.type === "group" || msg.chat.type === "supergroup") {
+        await ensureChat(env, msg.chat);
+        await upsertMemberActivity(env, msg.chat.id, msg.from, "message");
+      }
       return;
     }
     if ((update as any).message_reaction) {
@@ -177,9 +204,9 @@ async function runDailySweep(env: Env): Promise<void> {
 
     if (toWarn.results && toWarn.results.length > 0) {
       const mentions = toWarn.results.map((r) => mdMention(r.user_id, r.display_name)).join(", ");
-      const text = `⚠️ *Предупреждение*\nЗавтра будут исключены за неактивность: ${mentions}.\nЧтобы остаться, отправьте сообщение или поставьте реакцию сегодня.`;
+      const text = `⚠️ Предупреждение\nЗавтра будут исключены за неактивность: ${mentions}.\nЧтобы остаться, отправьте сообщение или поставьте реакцию сегодня.`;
       try {
-        await tg.sendMessage(chatId, text, { parse_mode: "MarkdownV2", disable_web_page_preview: true } as any);
+        await tg.sendMessage(chatId, text, { disable_web_page_preview: true } as any);
       } catch (e) {
         console.error("send warn message error", e);
       }
@@ -244,13 +271,13 @@ async function handleSetWindow(env: Env, tg: TelegramApiClient, chatId: number, 
   if (!isAdmin) return;
   const value = Number(args[0]);
   if (!Number.isFinite(value) || value < 7 || value > 365) {
-    await tg.sendMessage(chatId, `ℹ️ Укажите число дней 7\-365\. Пример: \`/set\-window 60\``, { parse_mode: "MarkdownV2" } as any);
+    await tg.sendMessage(chatId, `Укажите число дней 7-365. Пример: /set-window 60`);
     return;
   }
   await env.DB.prepare(`UPDATE chats SET activity_window_days = ?2, updated_at = ?3 WHERE chat_id = ?1`)
     .bind(chatId, value, new Date().toISOString())
     .run();
-  await tg.sendMessage(chatId, `✅ Окно активности: *${value} д*`, { parse_mode: "MarkdownV2" } as any);
+  await tg.sendMessage(chatId, `Ок. Окно активности: ${value} д`);
 }
 
 async function handlePreview(env: Env, tg: TelegramApiClient, chatId: number, fromUserId: number): Promise<void> {
@@ -269,18 +296,18 @@ async function handlePreview(env: Env, tg: TelegramApiClient, chatId: number, fr
     .all<{ user_id: number; display_name: string; username: string | null; role: string; joined_at: string | null; last_activity_at: string | null; excluded: number }>();
 
   if (!members.results || members.results.length === 0) {
-    await tg.sendMessage(chatId, `ℹ️ В базе пока нет участников\.`, { parse_mode: "MarkdownV2" } as any);
+    await tg.sendMessage(chatId, `В базе пока нет участников.`);
     return;
   }
 
-  const header = `📋 *Предпросмотр*\nОкно: *${windowDays} д*\nВсего: *${members.results.length}*`;
+  const header = `Предпросмотр\nОкно: ${windowDays} д\nВсего: ${members.results.length}`;
   const lines: string[] = [];
   for (const m of members.results) {
     const isProtected = m.role === "administrator" || m.role === "creator" || m.excluded === 1;
     const kick = isProtected ? null : computeKickDateNoGrace(m.last_activity_at, windowDays);
-    const name = m.username ? `@${mdEscape(m.username)}` : mdMention(m.user_id, m.display_name);
-    const status = isProtected ? "не удаляется" : (kick ? formatDateMd(kick) : "нет данных");
-    lines.push(`• 👤 ${name} — 🗓️ ${status}`);
+    const name = m.username ? `@${m.username}` : `${m.display_name}`;
+    const status = isProtected ? "не удаляется" : (kick ? formatDatePlain(kick) : "нет данных");
+    lines.push(`• ${name} — ${status}`);
   }
 
   const chunks: string[] = [];
@@ -295,28 +322,26 @@ async function handlePreview(env: Env, tg: TelegramApiClient, chatId: number, fr
   if (acc) chunks.push(acc);
 
   for (const msg of chunks) {
-    await tg.sendMessage(chatId, msg, { parse_mode: "MarkdownV2", disable_web_page_preview: true } as any);
+    await tg.sendMessage(chatId, msg, { disable_web_page_preview: true } as any);
   }
 }
 
 async function sendHelp(tg: TelegramApiClient, chatId: number): Promise<void> {
   const text = [
-    "👋 *Ghost Buster Bot*",
-    "Следит за активностью и помогает удалять неактивных участников\.",
+    "👋 Ghost Buster Bot",
+    "Следит за активностью и помогает удалять неактивных участников.",
     "",
     "• Ежедневная проверка в 09:00 по Варшаве",
-    "• Окно активности по умолчанию — *60 д*",
+    "• Окно активности по умолчанию — 60 д",
     "• За сутки до удаления приходит предупреждение",
     "• Активность: сообщения и реакции",
     "",
-    "📎 *Команды для админов*",
-    "\- /set\-window N — окно активности в днях \(7–365\)",
-    "\- /preview — список участников и дата возможного кика",
-    "\- /status — проверка прав бота \(нужно can\_restrict\_members\)",
-    "",
-    "ℹ️ Новички имеют отсрочку *7 д* по умолчанию\."
+    "Команды для админов:",
+    "- /set-window N — окно активности в днях (7–365)",
+    "- /preview — список участников и дата возможного кика",
+    "- /status — проверка прав бота (нужно can_restrict_members)",
   ].join("\n");
-  await tg.sendMessage(chatId, text, { parse_mode: "MarkdownV2" } as any);
+  await tg.sendMessage(chatId, text);
 }
 
 function computeKickDateNoGrace(lastActivityAt: string | null, windowDays: number): Date | null {
@@ -331,15 +356,21 @@ function formatDateMd(d: Date): string {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
-  // escape hyphen and dot for MarkdownV2
-  return `${y}\\-${m}\\-${day}`;
+  return `${y}-${m}-${day}`;
 }
 
 function mdEscape(s: string): string {
-  return String(s).replace(/[\\_\*\[\]\(\)~`>#+\-=\|\{\}\.\!]/g, (m) => `\\${m}`);
+  return String(s).replace(/[\_\*\[\]\(\)~`>#+\-=\|\{\}\.\!]/g, (m) => `\\${m}`);
 }
 
 function mdMention(userId: number, displayName: string): string {
   return `[${mdEscape(displayName)}](tg://user?id=${userId})`;
+}
+
+function formatDatePlain(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
