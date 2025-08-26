@@ -8,7 +8,7 @@ account_id = "b480d5f28dce910419458a20d2656fbe"
 # Set via `wrangler secrets put TELEGRAM_BOT_TOKEN`
 # Set via `wrangler secrets put TELEGRAM_WEBHOOK_SECRET`
 [triggers]
-crons = ["0 5 * * *"]
+crons = ["0 7 * * *"]
 
 [[d1_databases]]
 binding = "DB"
