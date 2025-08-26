@@ -1,0 +1,17 @@
+{
+  "name": "ghost-buster-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "wrangler": "^3.80.0",
+    "typescript": "^5.4.5",
+    "@cloudflare/workers-types": "^4.20240821.0"
+  }
+}
+
