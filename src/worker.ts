@@ -36,6 +36,8 @@ async function handleUpdate(env: Env, update: TelegramUpdate): Promise<void> {
     if (update.message) {
       const msg = update.message;
       if (!msg.chat || !msg.from) return;
+      // Ignore non-group chats
+      if (msg.chat.type !== "group" && msg.chat.type !== "supergroup") return;
       await ensureChat(env, msg.chat);
 
       // Commands (admin-only)
@@ -60,18 +62,21 @@ async function handleUpdate(env: Env, update: TelegramUpdate): Promise<void> {
     if ((update as any).message_reaction) {
       const r = (update as any).message_reaction;
       if (!r.chat || !r.user) return;
+      if (r.chat.type !== "group" && r.chat.type !== "supergroup") return;
       await ensureChat(env, r.chat);
       await upsertReactionActivity(env, r.chat.id, r.user);
       return;
     }
     if (update.chat_member) {
       const cm = update.chat_member;
+      if (cm.chat?.type !== "group" && cm.chat?.type !== "supergroup") return;
       await ensureChat(env, cm.chat);
       await upsertMemberRole(env, cm.chat.id, cm.new_chat_member.user, cm.new_chat_member.status);
       return;
     }
     if (update.my_chat_member) {
       const cm = update.my_chat_member;
+      if (cm.chat?.type !== "group" && cm.chat?.type !== "supergroup") return;
       await ensureChat(env, cm.chat);
       return;
     }
@@ -95,17 +100,19 @@ async function upsertMemberActivity(env: Env, chatId: number, user: any, kind: "
   if (!user || user.is_bot) return;
   const nowIso = new Date().toISOString();
   const name = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username || String(user.id);
+  const username = user.username ?? null;
   await env.DB.prepare(
-    `INSERT INTO chat_members (chat_id, user_id, display_name, role, joined_at, last_message_at, last_activity_at, warned_at, excluded)
-     VALUES (?1, ?2, ?3, 'member', ?4, ?4, ?4, NULL, 0)
+    `INSERT INTO chat_members (chat_id, user_id, display_name, username, role, joined_at, last_message_at, last_activity_at, warned_at, excluded)
+     VALUES (?1, ?2, ?3, ?5, 'member', ?4, ?4, ?4, NULL, 0)
      ON CONFLICT(chat_id, user_id) DO UPDATE SET
        display_name = excluded.display_name,
+       username = excluded.username,
        last_message_at = ?4,
        last_activity_at = ?4,
        role = CASE WHEN chat_members.role IN ('left','kicked') THEN 'member' ELSE chat_members.role END,
        warned_at = NULL`
   )
-    .bind(chatId, user.id, name, nowIso)
+    .bind(chatId, user.id, name, nowIso, username)
     .run();
 }
 
@@ -113,29 +120,32 @@ async function upsertReactionActivity(env: Env, chatId: number, user: any): Prom
   if (!user || user.is_bot) return;
   const nowIso = new Date().toISOString();
   const name = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username || String(user.id);
+  const username = user.username ?? null;
   await env.DB.prepare(
-    `INSERT INTO chat_members (chat_id, user_id, display_name, role, joined_at, last_reaction_at, last_activity_at, warned_at, excluded)
-     VALUES (?1, ?2, ?3, 'member', ?4, ?4, ?4, NULL, 0)
+    `INSERT INTO chat_members (chat_id, user_id, display_name, username, role, joined_at, last_reaction_at, last_activity_at, warned_at, excluded)
+     VALUES (?1, ?2, ?3, ?5, 'member', ?4, ?4, ?4, NULL, 0)
      ON CONFLICT(chat_id, user_id) DO UPDATE SET
        display_name = excluded.display_name,
+       username = excluded.username,
        last_reaction_at = ?4,
        last_activity_at = COALESCE(MAX(?4, chat_members.last_message_at, chat_members.last_reaction_at), ?4),
        role = CASE WHEN chat_members.role IN ('left','kicked') THEN 'member' ELSE chat_members.role END,
        warned_at = NULL`
   )
-    .bind(chatId, user.id, name, nowIso)
+    .bind(chatId, user.id, name, nowIso, username)
     .run();
 }
 
 async function upsertMemberRole(env: Env, chatId: number, user: any, status: ChatRole): Promise<void> {
   const nowIso = new Date().toISOString();
   const name = [user.first_name, user.last_name].filter(Boolean).join(" ") || user.username || String(user.id);
+  const username = user.username ?? null;
   await env.DB.prepare(
-    `INSERT INTO chat_members (chat_id, user_id, display_name, role, joined_at, excluded)
-     VALUES (?1, ?2, ?3, ?4, ?5, 0)
-     ON CONFLICT(chat_id, user_id) DO UPDATE SET display_name = excluded.display_name, role = ?4`
+    `INSERT INTO chat_members (chat_id, user_id, display_name, username, role, joined_at, excluded)
+     VALUES (?1, ?2, ?3, ?6, ?4, ?5, 0)
+     ON CONFLICT(chat_id, user_id) DO UPDATE SET display_name = excluded.display_name, username = excluded.username, role = ?4`
   )
-    .bind(chatId, user.id, name, status, nowIso)
+    .bind(chatId, user.id, name, status, nowIso, username)
     .run();
 }
 
