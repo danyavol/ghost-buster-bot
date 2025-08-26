@@ -2,16 +2,16 @@ name = "ghost-buster-bot"
 main = "src/worker.ts"
 compatibility_date = "2024-08-01"
 compatibility_flags = ["nodejs_compat"]
+account_id = "b480d5f28dce910419458a20d2656fbe"
 
 [vars]
 # Set via `wrangler secrets put TELEGRAM_BOT_TOKEN`
 # Set via `wrangler secrets put TELEGRAM_WEBHOOK_SECRET`
+[triggers]
+crons = ["0 5 * * *"]
 
 [[d1_databases]]
 binding = "DB"
 database_name = "ghost-buster-bot"
-database_id = "ghost-buster-bot"
-
-[triggers]
-crons = ["0 5 * * *"]
+database_id = "1afc51cd-0b8c-4304-9b3e-6f062980959c"
 
