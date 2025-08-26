@@ -162,18 +162,17 @@ async function runDailySweep(env: Env): Promise<void> {
   for (const row of chats.results ?? []) {
     const chatId = row.chat_id;
     const windowDays = row.activity_window_days ?? 60;
-    const graceDays = row.grace_days ?? 7;
+    const graceDays = 0;
     const warnAtDays = windowDays - 1;
 
     // Members to warn today: inactive for (windowDays - 1) days, not warned yet
     const toWarn = await env.DB.prepare(
       `SELECT user_id, display_name FROM chat_members
        WHERE chat_id = ?1 AND excluded = 0 AND role = 'member'
-         AND (joined_at IS NULL OR datetime(joined_at) <= datetime(?2, '-' || ?4 || ' days'))
          AND (last_activity_at IS NULL OR datetime(last_activity_at) <= datetime(?2, '-' || ?3 || ' days'))
          AND warned_at IS NULL`
     )
-      .bind(chatId, now.toISOString(), warnAtDays, graceDays)
+      .bind(chatId, now.toISOString(), warnAtDays)
       .all<{ user_id: number; display_name: string }>();
 
     if (toWarn.results && toWarn.results.length > 0) {
@@ -195,11 +194,10 @@ async function runDailySweep(env: Env): Promise<void> {
     const toKick = await env.DB.prepare(
       `SELECT user_id, display_name FROM chat_members
        WHERE chat_id = ?1 AND excluded = 0 AND role = 'member'
-         AND (joined_at IS NULL OR datetime(joined_at) <= datetime(?2, '-' || ?3 || ' days'))
-         AND (last_activity_at IS NULL OR datetime(last_activity_at) <= datetime(?2, '-' || ?4 || ' days'))
+         AND (last_activity_at IS NULL OR datetime(last_activity_at) <= datetime(?2, '-' || ?3 || ' days'))
          AND warned_at IS NOT NULL`
     )
-      .bind(chatId, now.toISOString(), graceDays, windowDays)
+      .bind(chatId, now.toISOString(), windowDays)
       .all<{ user_id: number; display_name: string }>();
 
     for (const m of toKick.results ?? []) {
@@ -258,9 +256,8 @@ async function handleSetWindow(env: Env, tg: TelegramApiClient, chatId: number, 
 async function handlePreview(env: Env, tg: TelegramApiClient, chatId: number, fromUserId: number): Promise<void> {
   const isAdmin = await assertAdmin(env, tg, chatId, fromUserId);
   if (!isAdmin) return;
-  const row = await env.DB.prepare(`SELECT activity_window_days, grace_days FROM chats WHERE chat_id = ?1`).bind(chatId).first<{ activity_window_days: number; grace_days: number }>();
+  const row = await env.DB.prepare(`SELECT activity_window_days FROM chats WHERE chat_id = ?1`).bind(chatId).first<{ activity_window_days: number }>();
   const windowDays = row?.activity_window_days ?? 60;
-  const graceDays = row?.grace_days ?? 7;
 
   const members = await env.DB.prepare(
     `SELECT user_id, display_name, username, role, joined_at, last_activity_at, excluded
@@ -276,11 +273,11 @@ async function handlePreview(env: Env, tg: TelegramApiClient, chatId: number, fr
     return;
   }
 
-  const header = `📋 *Предпросмотр*\nОкно: *${windowDays} д*  •  Отсрочка: *${graceDays} д*\nВсего: *${members.results.length}*`;
+  const header = `📋 *Предпросмотр*\nОкно: *${windowDays} д*\nВсего: *${members.results.length}*`;
   const lines: string[] = [];
   for (const m of members.results) {
     const isProtected = m.role === "administrator" || m.role === "creator" || m.excluded === 1;
-    const kick = isProtected ? null : computeKickDate(m.joined_at, m.last_activity_at, windowDays, graceDays);
+    const kick = isProtected ? null : computeKickDateNoGrace(m.last_activity_at, windowDays);
     const name = m.username ? `@${mdEscape(m.username)}` : mdMention(m.user_id, m.display_name);
     const status = isProtected ? "не удаляется" : (kick ? formatDateMd(kick) : "нет данных");
     lines.push(`• 👤 ${name} — 🗓️ ${status}`);
@@ -322,16 +319,10 @@ async function sendHelp(tg: TelegramApiClient, chatId: number): Promise<void> {
   await tg.sendMessage(chatId, text, { parse_mode: "MarkdownV2" } as any);
 }
 
-function computeKickDate(joinedAt: string | null, lastActivityAt: string | null, windowDays: number, graceDays: number): Date | null {
-  const joined = joinedAt ? new Date(joinedAt) : null;
+function computeKickDateNoGrace(lastActivityAt: string | null, windowDays: number): Date | null {
   const last = lastActivityAt ? new Date(lastActivityAt) : null;
-  if (!joined && !last) return null;
-  const grace = joined ? addDays(joined, graceDays) : null;
-  const base = last ?? joined;
-  const window = base ? addDays(base, windowDays) : null;
-  const candidates = [grace?.getTime() ?? 0, window?.getTime() ?? 0].filter((t) => t > 0) as number[];
-  if (candidates.length === 0) return null;
-  return new Date(Math.max(...candidates));
+  if (!last) return null;
+  return addDays(last, windowDays);
 }
 
 function addDays(d: Date, n: number): Date { return new Date(d.getTime() + n * 86400000); }
